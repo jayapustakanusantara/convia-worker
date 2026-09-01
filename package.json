@@ -1,0 +1,13 @@
+{
+  "name": "convia-worker",
+  "version": "1.0.0",
+  "description": "Convia webhook queue worker",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "redis": "^4.7.0"
+  }
+}
