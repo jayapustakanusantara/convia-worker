@@ -12,14 +12,10 @@ const PORT = process.env.PORT || 8080;
 const REDIS_URL = process.env.REDIS_URL;
 const RECAP_WEB_APP_URL = process.env.RECAP_WEB_APP_URL;
 const RECAP_API_KEY = process.env.RECAP_API_KEY;
-
-// CONVIA_API_KEY disimpan di Railway untuk kebutuhan Convia.
-// Saat ini pengiriman WhatsApp masih dilakukan oleh Apps Script.
 const CONVIA_API_KEY = process.env.CONVIA_API_KEY;
 
 // =====================================================
-// REDIS KEYS
-// KHUSUS CONVIA — tidak bercampur dengan jastip-worker
+// REDIS KEYS - KHUSUS CONVIA
 // =====================================================
 const QUEUE_NAME = "convia:queue";
 const PROCESSING_QUEUE = "convia:processing";
@@ -28,14 +24,28 @@ const DEAD_QUEUE = "convia:dead";
 const SEEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 // =====================================================
-// REDIS
+// REDIS CONNECTIONS
 // =====================================================
+
+// Redis #1:
+// untuk webhook, status, dedup, enqueue, dll.
 const redis = createClient({
+  url: REDIS_URL,
+});
+
+// Redis #2:
+// KHUSUS worker blocking queue.
+// Ini penting supaya BRPOPLPUSH tidak memblokir /status.
+const workerRedis = createClient({
   url: REDIS_URL,
 });
 
 redis.on("error", (err) => {
   console.error("[REDIS ERROR]", err);
+});
+
+workerRedis.on("error", (err) => {
+  console.error("[WORKER REDIS ERROR]", err);
 });
 
 // =====================================================
@@ -76,9 +86,6 @@ function getEventId(body, phone, command) {
     return String(directId);
   }
 
-  // Fallback deterministic ID jika Convia tidak mengirim event ID.
-  // Timestamp ikut dipakai supaya command yang sama di lain waktu
-  // tetap dapat diproses.
   const timestamp =
     body?.timestamp ||
     data?.timestamp ||
@@ -87,8 +94,6 @@ function getEventId(body, phone, command) {
     "";
 
   if (!timestamp) {
-    // Tanpa provider ID/timestamp, jangan menganggap command
-    // yang sama selamanya sebagai duplikat.
     return crypto.randomUUID();
   }
 
@@ -155,7 +160,6 @@ app.post("/convia", async (req, res) => {
 
     const eventType = String(body.event_type || "").trim();
 
-    // Kita hanya butuh pesan masuk.
     if (eventType !== "message.received") {
       return res.status(200).json({
         ok: true,
@@ -172,7 +176,6 @@ app.post("/convia", async (req, res) => {
 
     const command = normalizeCommand(content);
 
-    // Sama dengan command Apps Script yang sekarang.
     if (command !== "REKAP LIVE" && command !== "REKAP BBW") {
       return res.status(200).json({
         ok: true,
@@ -188,8 +191,6 @@ app.post("/convia", async (req, res) => {
     );
 
     if (!phone) {
-      // Tetap balas 200 supaya malformed event tidak membuat
-      // provider terus retry webhook.
       console.warn("[WEBHOOK] phone kosong");
 
       return res.status(200).json({
@@ -205,7 +206,6 @@ app.post("/convia", async (req, res) => {
     const eventId = getEventId(body, phone, command);
     const seenKey = `convia:seen:${eventId}`;
 
-    // Dedup sebelum masuk queue.
     const claimed = await redis.set(
       seenKey,
       "1",
@@ -236,9 +236,8 @@ app.post("/convia", async (req, res) => {
       JSON.stringify(job)
     );
 
-    // PENTING:
     // Convia langsung dapat HTTP 200.
-    // Proses Apps Script dilakukan oleh worker setelah ini.
+    // Apps Script diproses terpisah oleh worker.
     return res.status(200).json({
       ok: true,
       queued: true,
@@ -247,8 +246,6 @@ app.post("/convia", async (req, res) => {
   } catch (err) {
     console.error("[WEBHOOK ERROR]", err);
 
-    // Jangan biarkan error internal menyebabkan Convia
-    // menunggu lama sampai timeout.
     return res.status(200).json({
       ok: false,
       queued: false,
@@ -262,9 +259,6 @@ app.post("/convia", async (req, res) => {
 async function sendToRecapApp(job) {
   const controller = new AbortController();
 
-  // Apps Script kamu punya soft timeout sekitar 25 detik.
-  // Worker diberi waktu lebih panjang karena Convia sendiri
-  // sudah menerima HTTP 200 dari webhook.
   const timeout = setTimeout(() => {
     controller.abort();
   }, 40000);
@@ -272,15 +266,18 @@ async function sendToRecapApp(job) {
   try {
     const response = await fetch(RECAP_WEB_APP_URL, {
       method: "POST",
+
       headers: {
         "Content-Type": "application/json",
       },
+
       body: JSON.stringify({
         action: "create_link",
         phone: job.phone,
         recapType: job.recapType,
         apiKey: RECAP_API_KEY,
       }),
+
       redirect: "follow",
       signal: controller.signal,
     });
@@ -316,10 +313,10 @@ async function sendToRecapApp(job) {
         "Apps Script success=false"
       );
 
-      // Apps Script sudah menerima request.
-      // Jangan retry otomatis karena kita tidak mau risiko
-      // customer menerima pesan Convia dua kali.
+      // Request sudah mencapai Apps Script.
+      // Jangan retry otomatis untuk menghindari pesan dobel.
       err.retryable = false;
+
       throw err;
     }
 
@@ -331,9 +328,8 @@ async function sendToRecapApp(job) {
         "Apps Script timeout 40 detik"
       );
 
-      // Timeout bersifat ambigu:
-      // mungkin Apps Script sudah sempat mengirim pesan.
-      // Jadi JANGAN auto-retry.
+      // Ambigu: mungkin Apps Script sudah mengirim.
+      // Jadi jangan auto retry.
       timeoutError.retryable = false;
       timeoutError.ambiguous = true;
 
@@ -348,7 +344,7 @@ async function sendToRecapApp(job) {
 }
 
 // =====================================================
-// JOB PROCESSOR
+// PROCESS JOB
 // =====================================================
 async function processJob(job) {
   console.log(
@@ -372,9 +368,10 @@ async function workerLoop() {
 
   while (true) {
     try {
-      // Atomic move:
-      // queue -> processing
-      const raw = await redis.brPopLPush(
+      // PENTING:
+      // blocking command memakai workerRedis,
+      // BUKAN koneksi redis milik HTTP.
+      const raw = await workerRedis.brPopLPush(
         QUEUE_NAME,
         PROCESSING_QUEUE,
         0
@@ -394,13 +391,13 @@ async function workerLoop() {
           err
         );
 
-        await redis.lRem(
+        await workerRedis.lRem(
           PROCESSING_QUEUE,
           1,
           raw
         );
 
-        await redis.lPush(
+        await workerRedis.lPush(
           DEAD_QUEUE,
           raw
         );
@@ -411,7 +408,7 @@ async function workerLoop() {
       try {
         await processJob(job);
 
-        await redis.lRem(
+        await workerRedis.lRem(
           PROCESSING_QUEUE,
           1,
           raw
@@ -423,13 +420,12 @@ async function workerLoop() {
           err.message
         );
 
-        await redis.lRem(
+        await workerRedis.lRem(
           PROCESSING_QUEUE,
           1,
           raw
         );
 
-        // Hanya retry error yang jelas aman untuk dicoba lagi.
         if (err.retryable === true) {
           const attempts =
             Number(job.attempts || 0) + 1;
@@ -437,10 +433,9 @@ async function workerLoop() {
           if (attempts <= 3) {
             job.attempts = attempts;
 
-            // Backoff ringan.
             await sleep(attempts * 2000);
 
-            await redis.lPush(
+            await workerRedis.lPush(
               QUEUE_NAME,
               JSON.stringify(job)
             );
@@ -453,8 +448,6 @@ async function workerLoop() {
           }
         }
 
-        // Timeout / success=false / retry habis
-        // masuk dead queue supaya tidak bikin duplicate send.
         const deadJob = {
           ...job,
           failedAt: new Date().toISOString(),
@@ -462,7 +455,7 @@ async function workerLoop() {
           ambiguous: err.ambiguous === true,
         };
 
-        await redis.lPush(
+        await workerRedis.lPush(
           DEAD_QUEUE,
           JSON.stringify(deadJob)
         );
@@ -473,7 +466,10 @@ async function workerLoop() {
       }
 
     } catch (err) {
-      console.error("[WORKER LOOP ERROR]", err);
+      console.error(
+        "[WORKER LOOP ERROR]",
+        err
+      );
 
       await sleep(2000);
     }
@@ -502,9 +498,13 @@ async function start() {
     );
   }
 
+  // Connect Redis HTTP
   await redis.connect();
-
   console.log("[REDIS] connected");
+
+  // Connect Redis worker secara TERPISAH
+  await workerRedis.connect();
+  console.log("[WORKER REDIS] connected");
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(
