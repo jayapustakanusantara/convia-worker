@@ -160,7 +160,10 @@ app.post("/convia", async (req, res) => {
 
     const eventType = String(body.event_type || "").trim();
 
-    if (eventType !== "message.received") {
+    const isIncoming = eventType === "message.received";
+    const isOutgoing = eventType === "message.sent";
+
+    if (!isIncoming && !isOutgoing) {
       return res.status(200).json({
         ok: true,
         ignored: true,
@@ -176,7 +179,12 @@ app.post("/convia", async (req, res) => {
 
     const command = normalizeCommand(content);
 
-    if (command !== "REKAP LIVE" && command !== "REKAP BBW") {
+    // Customer boleh mengirim REKAP LIVE atau REKAP BBW.
+    // Admin hanya boleh memicu REKAP BBW dari pesan keluar.
+    if (
+      (isIncoming && command !== "REKAP LIVE" && command !== "REKAP BBW") ||
+      (isOutgoing && command !== "REKAP BBW")
+    ) {
       return res.status(200).json({
         ok: true,
         ignored: true,
@@ -184,8 +192,13 @@ app.post("/convia", async (req, res) => {
       });
     }
 
+    // Pesan keluar memakai nomor customer sebagai penerima.
     const phone = normalizePhone(
       data.customer_phone ||
+      data.recipient_phone ||
+      data.to ||
+      data.phone ||
+      data.raw?.to ||
       data.raw?.from ||
       ""
     );
@@ -227,6 +240,7 @@ app.post("/convia", async (req, res) => {
       phone,
       recapType,
       command,
+      adminInitiated: isOutgoing,
       receivedAt: new Date().toISOString(),
       attempts: 0,
     };
@@ -275,6 +289,7 @@ async function sendToRecapApp(job) {
         action: "create_link",
         phone: job.phone,
         recapType: job.recapType,
+        adminInitiated: job.adminInitiated === true,
         apiKey: RECAP_API_KEY,
       }),
 
