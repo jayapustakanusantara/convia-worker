@@ -179,11 +179,18 @@ app.post("/convia", async (req, res) => {
 
     const command = normalizeCommand(content);
 
-    // Customer boleh mengirim REKAP LIVE atau REKAP BBW.
-    // Admin hanya boleh memicu REKAP BBW dari pesan keluar.
+    // Customer boleh mengirim REKAP LIVE, REKAP BBW, REKAP BBW JOGJA,
+    // atau REKAP BBW GI. Admin boleh memicu rekap BBW yang sama dari pesan
+    // keluar tanpa mengubah alur pengiriman rekap yang sudah ada.
+    const supportedCommands = new Set([
+      "REKAP LIVE",
+      "REKAP BBW",
+      "REKAP BBW JOGJA",
+      "REKAP BBW GI",
+    ]);
+
     if (
-      (isIncoming && command !== "REKAP LIVE" && command !== "REKAP BBW") ||
-      (isOutgoing && command !== "REKAP BBW")
+      !supportedCommands.has(command)
     ) {
       return res.status(200).json({
         ok: true,
@@ -213,8 +220,13 @@ app.post("/convia", async (req, res) => {
       });
     }
 
-    const recapType =
-      command === "REKAP LIVE" ? "LIVE" : "BBW";
+    const recapTypeByCommand = {
+      "REKAP LIVE": "LIVE",
+      "REKAP BBW": "BBW",
+      "REKAP BBW JOGJA": "BBW_JOGJA",
+      "REKAP BBW GI": "BBW_GI",
+    };
+    const recapType = recapTypeByCommand[command];
 
     const eventId = getEventId(body, phone, command);
     const seenKey = `convia:seen:${eventId}`;
