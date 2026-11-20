@@ -202,12 +202,12 @@ app.post("/convia", async (req, res) => {
 
     // Pesan keluar memakai nomor customer sebagai penerima.
     const phone = normalizePhone(
-      data.customer_phone ||
-      data.recipient_phone ||
-      data.to ||
-      data.phone ||
-      data.raw?.to ||
-      data.raw?.from ||
+      (isIncoming
+        ? (data.customer_phone || data.sender_phone || data.from ||
+           data.raw?.participant || data.raw?.key?.participant ||
+           data.raw?.from || data.phone)
+        : (data.customer_phone || data.recipient_phone || data.to ||
+           data.phone || data.raw?.to)) ||
       ""
     );
 
@@ -228,7 +228,9 @@ app.post("/convia", async (req, res) => {
       "REKAP BBW JOGJA": "BBW_JOGJA",
       "REKAP BBW GI": "BBW_GI",
     };
-    const recapType = recapTypeByCommand[command];
+    // Isolated customer REKAP PO; legacy recap types remain unchanged.
+    const recapType = isIncoming && command === "REKAP PO"
+      ? "PO_CUSTOMER" : recapTypeByCommand[command];
 
     const eventId = getEventId(body, phone, command);
     const seenKey = `convia:seen:${eventId}`;
