@@ -12,6 +12,9 @@ const PORT = process.env.PORT || 8080;
 const REDIS_URL = process.env.REDIS_URL;
 const RECAP_WEB_APP_URL = process.env.RECAP_WEB_APP_URL;
 const RECAP_API_KEY = process.env.RECAP_API_KEY;
+// Separate destination for customer PO only; never fall back to legacy BBW.
+const PO_RECAP_WEB_APP_URL = process.env.PO_RECAP_WEB_APP_URL;
+const PO_RECAP_API_KEY = process.env.PO_RECAP_API_KEY;
 const CONVIA_API_KEY = process.env.CONVIA_API_KEY;
 
 // =====================================================
@@ -203,13 +206,21 @@ app.post("/convia", async (req, res) => {
     // Pesan keluar memakai nomor customer sebagai penerima.
     const phone = normalizePhone(
       (isIncoming
-        ? (data.customer_phone || data.sender_phone || data.from ||
-           data.raw?.participant || data.raw?.key?.participant ||
-           data.raw?.from || data.phone)
+        ? (data.customer_phone || data.sender_phone ||
+           data.raw?.key?.participant || data.raw?.participant ||
+           data.raw?.sender || data.phone ||
+           (String(data.from || "").includes("@g.us") ? "" : data.from) ||
+           (String(data.raw?.from || "").includes("@g.us") ? "" : data.raw?.from))
         : (data.customer_phone || data.recipient_phone || data.to ||
            data.phone || data.raw?.to)) ||
       ""
     );
+
+    // A group JID is never a customer's telephone number.
+    if (isIncoming && (!phone || phone.length < 9 || phone.length > 15)) {
+      console.warn("[WEBHOOK] customer phone invalid/missing");
+      return res.status(200).json({ok:true,ignored:true,reason:"customer_phone_invalid"});
+    }
 
     if (!phone) {
       console.warn("[WEBHOOK] phone kosong");
@@ -294,7 +305,17 @@ async function sendToRecapApp(job) {
   }, 40000);
 
   try {
-    const response = await fetch(RECAP_WEB_APP_URL, {
+    const isCustomerPo = job.recapType === "PO_CUSTOMER";
+    const targetUrl = isCustomerPo ? PO_RECAP_WEB_APP_URL : RECAP_WEB_APP_URL;
+    const targetApiKey = isCustomerPo ? PO_RECAP_API_KEY : RECAP_API_KEY;
+    if (!targetUrl || !targetApiKey) {
+      const err = new Error(isCustomerPo
+        ? "PO_RECAP_WEB_APP_URL / PO_RECAP_API_KEY belum dikonfigurasi"
+        : "Legacy recap configuration missing");
+      err.retryable = false;
+      throw err;
+    }
+    const response = await fetch(targetUrl, {
       method: "POST",
 
       headers: {
@@ -306,7 +327,7 @@ async function sendToRecapApp(job) {
         phone: job.phone,
         recapType: job.recapType,
         adminInitiated: job.adminInitiated === true,
-        apiKey: RECAP_API_KEY,
+        apiKey: targetApiKey,
       }),
 
       redirect: "follow",
