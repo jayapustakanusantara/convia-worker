@@ -179,11 +179,12 @@ app.post("/convia", async (req, res) => {
 
     const command = normalizeCommand(content);
 
-    // Customer boleh mengirim REKAP LIVE, REKAP BBW, REKAP BBW JOGJA,
-    // atau REKAP BBW GI. Admin boleh memicu rekap BBW yang sama dari pesan
+    // Customer boleh mengirim REKAP LIVE, REKAP PO, REKAP BBW, REKAP BBW JOGJA,
+    // atau REKAP BBW GI. Admin boleh memicu rekap yang sama dari pesan
     // keluar tanpa mengubah alur pengiriman rekap yang sudah ada.
     const supportedCommands = new Set([
       "REKAP LIVE",
+      "REKAP PO",
       "REKAP BBW",
       "REKAP BBW JOGJA",
       "REKAP BBW GI",
@@ -222,6 +223,7 @@ app.post("/convia", async (req, res) => {
 
     const recapTypeByCommand = {
       "REKAP LIVE": "LIVE",
+      "REKAP PO": "PO",
       "REKAP BBW": "BBW",
       "REKAP BBW JOGJA": "BBW_JOGJA",
       "REKAP BBW GI": "BBW_GI",
