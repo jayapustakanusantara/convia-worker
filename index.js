@@ -183,13 +183,14 @@ app.post("/convia", async (req, res) => {
     const command = normalizeCommand(content);
 
     // Customer boleh mengirim REKAP LIVE, REKAP PO, REKAP BBW, REKAP BBW JOGJA,
-    // atau REKAP BBW GI. Admin boleh memicu rekap yang sama dari pesan
+    // REKAP BBW ICE atau REKAP BBW GI. Admin boleh memicu rekap yang sama dari pesan
     // keluar tanpa mengubah alur pengiriman rekap yang sudah ada.
     const supportedCommands = new Set([
       "REKAP LIVE",
       "REKAP PO",
       "REKAP BBW",
       "REKAP BBW JOGJA",
+      "REKAP BBW ICE",
       "REKAP BBW GI",
     ]);
 
@@ -237,6 +238,7 @@ app.post("/convia", async (req, res) => {
       "REKAP PO": "PO",
       "REKAP BBW": "BBW",
       "REKAP BBW JOGJA": "BBW_JOGJA",
+      "REKAP BBW ICE": "BBW_ICE",
       "REKAP BBW GI": "BBW_GI",
     };
     // Isolated customer REKAP PO; legacy recap types remain unchanged.
